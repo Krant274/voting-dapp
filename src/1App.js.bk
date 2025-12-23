@@ -1,0 +1,410 @@
+import React, { useState, useEffect, useCallback } from 'react';
+import { ethers } from 'ethers';
+import { CONTRACT_ADDRESS, CONTRACT_ABI } from './contract.js.bk';
+import { 
+  Vote, Wallet, PlusCircle, Timer, ShieldCheck, Award, 
+  ChevronRight, Settings, ListChecks, Activity, Ban, CheckCircle 
+} from 'lucide-react';
+
+function App() {
+  const [account, setAccount] = useState('');
+  const [contract, setContract] = useState(null);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [loading, setLoading] = useState(false);
+  
+  // State Dữ liệu
+  const [elections, setElections] = useState([]);
+  const [selectedElection, setSelectedElection] = useState(null);
+  const [candidates, setCandidates] = useState([]);
+  const [electionStats, setElectionStats] = useState(null);
+  const [voterStatus, setVoterStatus] = useState({ voted: false, candidateId: 0 });
+  const [useWhitelist, setUseWhitelist] = useState(false);
+
+  // --- KHỞI TẠO & KẾT NỐI ---
+  const connectWallet = async () => {
+    try {
+      if (!window.ethereum) return alert('Vui lòng cài đặt MetaMask!');
+      const provider = new ethers.BrowserProvider(window.ethereum);
+      const network = await provider.getNetwork();
+      if (network.chainId !== 11155111n) return alert('Vui lòng chuyển sang mạng Sepolia!');
+
+      const accounts = await provider.send("eth_requestAccounts", []);
+      const signer = await provider.getSigner();
+      const votingContract = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
+      
+      setAccount(accounts[0]);
+      setContract(votingContract);
+
+      const adminAddress = await votingContract.admin();
+      setIsAdmin(adminAddress.toLowerCase() === accounts[0].toLowerCase());
+      
+      const whitelistStatus = await votingContract.useWhitelist();
+      setUseWhitelist(whitelistStatus);
+
+      await loadAllElections(votingContract);
+    } catch (error) {
+      console.error(error);
+    }
+  };
+
+  // --- QUẢN LÝ CUỘC BẦU CỬ (ELECTION) ---
+  const loadAllElections = async (contractInstance) => {
+    try {
+      const data = await contractInstance.getAllElections();
+      const list = data[0].map((id, index) => ({
+        id: Number(id),
+        title: data[1][index],
+        startTime: Number(data[2][index]),
+        endTime: Number(data[3][index]),
+        isActive: data[4][index],
+        isFinalized: data[5][index]
+      }));
+      setElections(list);
+    } catch (error) { console.error(error); }
+  };
+
+  const createElection = async () => {
+    const title = prompt("Tiêu đề:");
+    const desc = prompt("Mô tả:");
+    const startIn = prompt("Bắt đầu sau (phút):", "1");
+    const duration = prompt("Kéo dài (phút):", "60");
+    if (!title) return;
+
+    const start = Math.floor(Date.now() / 1000) + (parseInt(startIn) * 60);
+    const end = start + (parseInt(duration) * 60);
+
+    try {
+      setLoading(true);
+      const tx = await contract.createElection(title, desc, start, end);
+      await tx.wait();
+      loadAllElections(contract);
+    } catch (e) { alert(e.reason || e.message); } finally { setLoading(false); }
+  };
+
+  const finalizeElection = async (id) => {
+    if (!window.confirm("Kết thúc cuộc bầu cử và chốt kết quả?")) return;
+    try {
+      setLoading(true);
+      const tx = await contract.finalizeElection(id);
+      await tx.wait();
+      alert("Đã chốt kết quả!");
+      window.location.reload();
+    } catch (e) { alert(e.reason || e.message); } finally { setLoading(false); }
+  };
+
+  const toggleElectionStatus = async (id) => {
+    try {
+      setLoading(true);
+      const tx = await contract.toggleElectionStatus(id);
+      await tx.wait();
+      loadAllElections(contract);
+    } catch (e) { alert(e.reason || e.message); } finally { setLoading(false); }
+  };
+
+  // --- QUẢN LÝ ỨNG CỬ VIÊN (CANDIDATE) ---
+  const selectElection = useCallback(async (elec) => {
+    if (!contract || !elec) return; // Bảo vệ nếu chưa có contract
+    setLoading(true);
+    setSelectedElection(elec);
+    try {
+      const res = await contract.getElectionCandidates(elec.id);
+      setCandidates(res[0].map((id, i) => ({
+        id: Number(id), name: res[1][i], description: res[2][i],
+        imageUrl: res[3][i], voteCount: Number(res[4][i]), isActive: res[5][i]
+      })));
+
+      const stats = await contract.getElectionStats(elec.id);
+      setElectionStats({
+        totalCands: Number(stats[0]), activeCands: Number(stats[1]),
+        totalVotes: Number(stats[2]), totalVoters: Number(stats[3]),
+        timeLeft: Number(stats[4])
+      });
+
+      if (account) {
+        const status = await contract.checkVoterStatus(elec.id, account);
+        setVoterStatus({ voted: status[0], candidateId: Number(status[1]) });
+      }
+    } catch (e) { 
+      console.error(e); 
+    } finally { 
+      setLoading(false); 
+    }
+  }, [contract, account]);
+
+  const registerCandidate = async () => {
+    const name = prompt("Tên ứng cử viên:");
+    const desc = prompt("Mô tả:");
+    const img = prompt("URL ảnh:", "https://via.placeholder.com/150");
+    try {
+      setLoading(true);
+      const tx = await contract.registerCandidate(selectedElection.id, name, desc, img);
+      await tx.wait();
+      selectElection(selectedElection);
+    } catch (e) { alert(e.reason || e.message); } finally { setLoading(false); }
+  };
+
+  const disqualifyCandidate = async (id) => {
+    if (!window.confirm("Loại bỏ ứng cử viên này?")) return;
+    try {
+      setLoading(true);
+      const tx = await contract.disqualifyCandidate(id);
+      await tx.wait();
+      selectElection(selectedElection);
+    } catch (e) { alert(e.reason || e.message); } finally { setLoading(false); }
+  };
+
+  // --- WHITELIST & BỎ PHIẾU ---
+  const toggleWhitelistMode = async () => {
+    try {
+      setLoading(true);
+      const tx = await contract.toggleWhitelist();
+      await tx.wait();
+      setUseWhitelist(!useWhitelist);
+    } catch (e) { alert(e.reason || e.message); } finally { setLoading(false); }
+  };
+
+  const batchWhitelist = async () => {
+    const input = prompt("Nhập danh sách ví (phân tách bởi dấu phẩy):");
+    if (!input) return;
+    const addresses = input.split(',').map(a => a.trim());
+    try {
+      setLoading(true);
+      const tx = await contract.batchUpdateWhitelist(addresses, true);
+      await tx.wait();
+      alert("Đã cập nhật Whitelist!");
+    } catch (e) { alert(e.reason || e.message); } finally { setLoading(false); }
+  };
+
+  const handleVote = async (cid) => {
+    try {
+      setLoading(true);
+      const tx = await contract.vote(selectedElection.id, cid);
+      await tx.wait(); // Đợi block xác nhận
+      
+      alert("Bỏ phiếu thành công! Đang cập nhật trạng thái...");
+      
+      // Đợi 1 giây để node Blockchain cập nhật dữ liệu mới nhất
+      setTimeout(async () => {
+        await selectElection(selectedElection);
+        setLoading(false);
+      }, 1000);
+      
+    } catch (e) {
+      alert("Lỗi: " + (e.reason || e.message));
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (selectedElection && contract && account) {
+      selectElection(selectedElection);
+    }
+  }, [account, contract, selectedElection, selectElection]); 
+
+  return (
+    <div className="min-h-screen bg-gray-50 text-gray-900 pb-20">
+      {/* HEADER */}
+      <header className="bg-white border-b sticky top-0 z-40">
+        <div className="max-w-7xl mx-auto px-6 py-4 flex justify-between items-center">
+          <div className="flex items-center gap-2 cursor-pointer" onClick={() => setSelectedElection(null)}>
+            <Vote className="text-blue-600" size={32} />
+            <h1 className="text-2xl font-black italic text-blue-900">VOTE MASTER V2</h1>
+          </div>
+          
+          <div className="flex items-center gap-4">
+            {!account ? (
+              <button onClick={connectWallet} className="bg-blue-600 text-white px-6 py-2 rounded-full font-bold shadow-lg flex items-center gap-2">
+                <Wallet size={20}/> Kết nối ví
+              </button>
+            ) : (
+              <div className="flex items-center gap-4 bg-gray-100 px-4 py-2 rounded-2xl border border-gray-200">
+                <div className="text-right">
+                  <p className="text-[10px] font-bold text-gray-400 uppercase">Hệ thống mạng Sepolia</p>
+                  <p className="text-sm font-mono font-bold text-blue-600">{account.slice(0,6)}...{account.slice(-4)}</p>
+                </div>
+                {isAdmin && <Settings className="text-gray-400" size={20}/>}
+              </div>
+            )}
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-7xl mx-auto px-6 py-8">
+        {/* ADMIN GLOBAL TOOLS */}
+        {isAdmin && (
+          <div className="mb-10 p-6 bg-white rounded-3xl border-2 border-dashed border-blue-200 flex flex-wrap gap-4 items-center">
+            <h3 className="font-black text-blue-900 flex items-center gap-2"><ShieldCheck/> QUẢN TRỊ VIÊN:</h3>
+            <button onClick={createElection} className="bg-blue-600 text-white px-4 py-2 rounded-xl text-sm font-bold flex items-center gap-2">
+              <PlusCircle size={16}/> Tạo cuộc bầu cử
+            </button>
+            <button onClick={toggleWhitelistMode} className={`px-4 py-2 rounded-xl text-sm font-bold flex items-center gap-2 ${useWhitelist ? 'bg-orange-100 text-orange-600' : 'bg-gray-100 text-gray-600'}`}>
+              <ListChecks size={16}/> {useWhitelist ? "Tắt Whitelist" : "Bật Whitelist"}
+            </button>
+            <button onClick={batchWhitelist} className="bg-gray-800 text-white px-4 py-2 rounded-xl text-sm font-bold flex items-center gap-2">
+              <PlusCircle size={16}/> Thêm Whitelist hàng loạt
+            </button>
+          </div>
+        )}
+
+        {!selectedElection ? (
+          /* VIEW LIST */
+          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-8">
+            {elections.map(e => (
+              <div key={e.id} className="bg-white rounded-[2.5rem] p-8 border border-gray-100 shadow-xl hover:shadow-2xl transition-all relative overflow-hidden group">
+                <div className={`absolute top-0 right-0 px-6 py-2 rounded-bl-2xl font-black text-[10px] uppercase ${e.isActive ? 'bg-green-500 text-white' : 'bg-red-500 text-white'}`}>
+                  {e.isActive ? "Đang mở" : "Đã đóng"}
+                </div>
+                <h3 className="text-2xl font-black mb-4 group-hover:text-blue-600 transition-colors">{e.title}</h3>
+                <div className="space-y-3 mb-8">
+                  <div className="flex items-center gap-2 text-gray-500 text-sm italic">
+                    <Timer size={16}/> {new Date(e.startTime * 1000).toLocaleString('vi-VN')}
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={() => selectElection(e)} className="flex-1 bg-gray-900 text-white py-4 rounded-2xl font-black flex justify-center items-center gap-2 hover:bg-blue-600 transition-all">
+                    VÀO BẦU CHỌN <ChevronRight size={20}/>
+                  </button>
+                  {isAdmin && (
+                    <button onClick={() => toggleElectionStatus(e.id)} className="p-4 bg-gray-100 rounded-2xl text-gray-600 hover:bg-orange-100 hover:text-orange-600">
+                      <Activity size={20}/>
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          /* VIEW DETAIL */
+          <div className="animate-in fade-in zoom-in-95 duration-300">
+            <button onClick={() => setSelectedElection(null)} className="mb-8 font-bold text-gray-400 hover:text-blue-600 transition-all flex items-center gap-2">
+              ← QUAY LẠI DANH SÁCH
+            </button>
+
+            <div className="grid lg:grid-cols-3 gap-10">
+              {/* LEFT: INFO & CANDIDATES */}
+              <div className="lg:col-span-2 space-y-8">
+                <div className="bg-white rounded-[3rem] p-10 border border-gray-100 shadow-sm">
+                  <div className="flex justify-between items-start mb-6">
+                    <div>
+                      <h2 className="text-5xl font-black text-gray-900 mb-2">{selectedElection.title}</h2>
+                      <p className="text-gray-400 font-medium">Báo cáo mã số cuộc bầu cử: #{selectedElection.id}</p>
+                    </div>
+                    {isAdmin && !selectedElection.isFinalized && (
+                      <div className="flex gap-2">
+                        <button onClick={registerCandidate} className="bg-blue-600 text-white px-6 py-3 rounded-2xl font-bold flex items-center gap-2 shadow-lg">
+                          <PlusCircle size={20}/> Thêm ứng viên
+                        </button>
+                        <button onClick={() => finalizeElection(selectedElection.id)} className="bg-red-600 text-white px-6 py-3 rounded-2xl font-bold flex items-center gap-2 shadow-lg">
+                          <CheckCircle size={20}/> Chốt kết quả
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* STATS BAR */}
+                  {electionStats && (
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 py-6 border-t border-b border-gray-100 my-8">
+                      <div className="text-center">
+                        <p className="text-xs font-black text-gray-400 uppercase">Tổng số phiếu</p>
+                        <p className="text-2xl font-black text-blue-600">{electionStats.totalVotes}</p>
+                      </div>
+                      <div className="text-center">
+                        <p className="text-xs font-black text-gray-400 uppercase">Ứng viên active</p>
+                        <p className="text-2xl font-black text-green-500">{electionStats.activeCands}/{electionStats.totalCands}</p>
+                      </div>
+                      <div className="text-center">
+                        <p className="text-xs font-black text-gray-400 uppercase">Người tham gia</p>
+                        <p className="text-2xl font-black text-gray-900">{electionStats.totalVoters}</p>
+                      </div>
+                      <div className="text-center">
+                        <p className="text-xs font-black text-gray-400 uppercase">Thời gian còn</p>
+                        <p className="text-2xl font-black text-orange-500">{Math.floor(electionStats.timeLeft/3600)}h</p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* CANDIDATES LIST */}
+                  <div className="space-y-6">
+                    {candidates.map(c => (
+                      <div key={c.id} className={`group bg-gray-50 rounded-[2rem] p-6 flex flex-col md:flex-row items-center gap-8 border-2 transition-all ${voterStatus.candidateId === c.id ? 'border-blue-500 bg-blue-50/30' : 'border-transparent'}`}>
+                        <img src={c.imageUrl} className={`w-32 h-32 rounded-[1.5rem] object-cover shadow-lg ${!c.isActive && 'grayscale opacity-50'}`} alt=""/>
+                        <div className="flex-1">
+                          <div className="flex items-center gap-3 mb-2">
+                            <h4 className="text-2xl font-black">{c.name}</h4>
+                            {!c.isActive && <span className="bg-red-100 text-red-600 text-[10px] font-black px-2 py-1 rounded-md italic">DISQUALIFIED</span>}
+                          </div>
+                          <p className="text-gray-500 text-sm leading-relaxed mb-4">{c.description}</p>
+                          <div className="inline-flex items-center gap-2 bg-white px-4 py-2 rounded-xl shadow-sm border border-gray-100">
+                            <Vote className="text-blue-600" size={16}/>
+                            <span className="font-black text-blue-900">{c.voteCount} Phiếu</span>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-col gap-2 w-full md:w-auto">
+                          <button
+                            disabled={voterStatus.voted || !c.isActive || selectedElection.isFinalized || !selectedElection.isActive}
+                            onClick={() => handleVote(c.id)}
+                            className={`px-10 py-4 rounded-2xl font-black shadow-lg transition-all ${
+                              voterStatus.voted && voterStatus.candidateId === c.id
+                              ? "bg-green-500 text-white shadow-green-200"
+                              : (voterStatus.voted || !c.isActive || selectedElection.isFinalized || !selectedElection.isActive)
+                              ? "bg-gray-200 text-gray-400 cursor-not-allowed shadow-none"
+                              : "bg-blue-600 text-white hover:bg-blue-700 shadow-blue-200"
+                            }`}
+                          >
+                            {voterStatus.voted && voterStatus.candidateId === c.id ? "ĐÃ BẦU ✅" : "BỎ PHIẾU"}
+                          </button>
+                          
+                          {isAdmin && c.isActive && (
+                            <button onClick={() => disqualifyCandidate(c.id)} className="flex items-center justify-center gap-1 text-red-500 text-xs font-bold hover:underline">
+                              <Ban size={14}/> Loại bỏ ứng viên
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* RIGHT: WINNER & STATUS */}
+              <div className="space-y-6">
+                <div className="bg-white rounded-[2.5rem] p-8 border border-gray-100 shadow-sm text-center">
+                  <h4 className="font-black text-gray-400 text-xs uppercase tracking-widest mb-6">Trạng thái cá nhân</h4>
+                  <div className={`w-20 h-20 mx-auto rounded-full flex items-center justify-center mb-4 ${voterStatus.voted ? 'bg-green-100 text-green-600' : 'bg-gray-100 text-gray-400'}`}>
+                    <CheckCircle size={40}/>
+                  </div>
+                  <p className="font-black text-xl">{voterStatus.voted ? "Bạn đã hoàn thành" : "Bạn chưa bỏ phiếu"}</p>
+                  {voterStatus.voted && <p className="text-gray-400 text-sm italic mt-1">Đã bầu cho ứng viên #{voterStatus.candidateId}</p>}
+                </div>
+
+                {selectedElection.isFinalized && (
+                  <div className="bg-blue-900 rounded-[2.5rem] p-10 text-white shadow-2xl relative overflow-hidden">
+                    <Award className="absolute -right-4 -bottom-4 text-white/10" size={150}/>
+                    <h4 className="font-black text-blue-300 text-xs uppercase tracking-widest mb-2">Người chiến thắng</h4>
+                    <p className="text-4xl font-black mb-4 underline decoration-orange-500 underline-offset-8">
+                      {selectedElection.winnerId > 0 ? `Ứng viên #${selectedElection.winnerId}` : "Chưa có"}
+                    </p>
+                    <p className="text-blue-200 text-sm font-medium italic">Dựa trên tổng số {selectedElection.totalVotes} phiếu bầu minh bạch từ Blockchain.</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </main>
+
+      {/* LOADING OVERLAY */}
+      {loading && (
+        <div className="fixed inset-0 bg-white/80 backdrop-blur-md z-[100] flex items-center justify-center">
+          <div className="flex flex-col items-center gap-4">
+            <div className="w-16 h-16 border-8 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+            <p className="font-black text-blue-900 tracking-tighter">BLOCKCHAIN IS MINING...</p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default App;
