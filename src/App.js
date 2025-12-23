@@ -158,7 +158,7 @@ function App() {
           <div className="flex items-center gap-4">
             <div className="bg-blue-600 p-3 rounded-2xl shadow-lg text-white"><Vote size={32} /></div>
             <div>
-              <h1 className="text-2xl font-black text-slate-800 tracking-tight italic">ELECTION v{electionId}</h1>
+              <h1 className="text-2xl font-black text-slate-800 tracking-tight italic">Cuộc bỏ phiếu #{electionId}</h1>
               <div className="flex items-center gap-2 mt-1">
                 <span className={`text-[10px] font-black px-3 py-1 rounded-full border ${votingActive ? 'bg-green-50 text-green-600 border-green-200' : 'bg-red-50 text-red-600 border-red-200'}`}>
                   {votingActive ? 'ĐANG MỞ' : 'ĐÃ ĐÓNG'}
